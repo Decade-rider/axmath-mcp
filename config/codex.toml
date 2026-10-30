@@ -1,0 +1,15 @@
+# Replace C:\path\to\axmath-mcp with your clone's absolute path.
+# Merge this table into your Codex user config; do not replace the whole file.
+# If the client cannot find uv on PATH, use the absolute path to uv.exe.
+[mcp_servers.axmath]
+command = 'uv'
+args = ['--directory', 'C:\path\to\axmath-mcp', 'run', '--no-sync', 'python', '-m', 'axmath_mcp.server']
+startup_timeout_sec = 30
+tool_timeout_sec = 300
+
+[mcp_servers.axmath.env]
+UV_CACHE_DIR = 'C:\path\to\axmath-mcp\.uv-cache'
+PYTHONUTF8 = '1'
+PYTHONUNBUFFERED = '1'
+AXMATH_MCP_VERSION = '0.3.0'
+

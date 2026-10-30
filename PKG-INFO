@@ -1,0 +1,161 @@
+Metadata-Version: 2.5
+Name: axmath-mcp
+Version: 0.3.0
+Summary: Local MCP tools for editable AxMath equations in Microsoft Word and PowerPoint
+Classifier: Development Status :: 3 - Alpha
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Office/Business
+Requires-Python: >=3.12
+Requires-Dist: mcp<2,>=1.26
+Requires-Dist: pywin32>=310; sys_platform == 'win32'
+Description-Content-Type: text/markdown
+
+# AxMath MCP for Word and PowerPoint
+
+让支持 MCP 的助手在 **Word 和 PowerPoint 中插入、读取和修改可编辑的 AxMath 公式**。输入自然语言或 LaTeX，公式保存为原生 AxMath OLE 对象，可以继续用 AxMath 打开编辑。
+
+Word 与 PowerPoint 使用同一个 `axmath` 服务，只需安装和连接一次。
+
+## 开始前准备
+
+- **Windows 桌面环境**，不要在 WSL、Linux 容器或网页端运行此本机服务。
+- **桌面版 Microsoft Word**。PowerPoint 功能也需要 Word，用于调用 AxMath 的 LaTeX 转换。
+- **正常授权的 AxMath**，且 Word 已加载 `AxMath.dotm`。先确认能在 Word 中手动插入并编辑 AxMath 公式。
+- 使用幻灯片功能时，还需安装 **桌面版 Microsoft PowerPoint**。
+- 安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) 和 Git；Python 要求为 3.12 或以上，uv 可按需安装。
+
+本项目不包含 Office、AxMath 或其授权，不需要为这个 MCP 服务另外填写大模型 API Key。模型由你使用的 MCP 客户端提供。
+
+## 1. 安装并连接 Codex
+
+将 `YOUR_GITHUB_USER` 替换为实际仓库的用户名或组织名；下面的仓库地址是占位符。
+
+```powershell
+git clone https://github.com/YOUR_GITHUB_USER/axmath-mcp.git
+Set-Location axmath-mcp
+uv sync --locked --default-index https://pypi.org/simple
+uv run --no-sync python scripts/register_codex.py --install
+uv run --no-sync python scripts/smoke_mcp.py
+```
+
+也可以下载仓库 ZIP，解压并进入项目目录后执行后三条命令。首次同步需要联网，并会创建项目独立的 `.venv`。
+
+注册脚本会识别你电脑上的项目位置和 `uv.exe` 路径，保留原 Codex 配置。相同配置不重复写入；同名配置不同则提示冲突，不直接覆盖。
+
+完成后，在客户端重新加载 MCP 服务，必要时重启客户端。服务由客户端自动启动，日常使用无需单独打开终端运行。移动项目目录后，需要更新客户端中的路径配置。
+
+检查通过后，先向助手说：
+
+> 检查 AxMath 环境，并列出当前打开的 Word 文档和 PowerPoint 演示文稿。
+
+如果需要连接其他支持本机 stdio MCP 的客户端，参考 [通用配置](config/mcp.json) 并替换项目路径。建议将单次工具超时设为 **300 秒**。Codex 配置格式见 [官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp)。
+
+## 2. 在 Word 中使用
+
+打开目标文档后，告诉助手要修改哪个文件、插入到哪里，以及使用哪种排版。例如：
+
+> 在“研究笔记.docx”末尾插入贝叶斯公式，使用独立居中排版和自动编号，字号 12 磅，先不要保存。
+
+> 读取这个文档中的第一条 AxMath 公式，把它修改为 `x^2+y^2=z^2`，保留原来的编号。
+
+> 把选中的文字替换为行内公式 `\frac{a+b}{c+d}`，保持前后的中文正文。
+
+> 把这条公式的编号改成固定的 `(A.1)`，最后另存为 `C:\Documents\公式示例.docx`。
+
+Word 支持三种排版：
+
+| 排版 | 适合的场景 | 参数 |
+| --- | --- | --- |
+| 行内 | 与中文或英文正文混排 | `layout: "inline"` |
+| 独立居中 | 公式单独占一段 | `layout: "display"` |
+| 带编号 | 公式居中、编号在右侧 | `layout: "numbered"` |
+
+带编号时，省略 `number_label` 会生成自动序号；给出 `"(A.1)"` 等文本则使用固定编号。插入位置支持正文末尾、书签或已检查的当前选区。修改已有公式时，先列出公式，再按返回的 ID 操作。
+
+如果直接构造工具参数，`word_insert_axmath` 示例为：
+
+```json
+{
+  "document_id": "使用工具返回的文档 ID",
+  "latex": "P(A\\mid B)=\\frac{P(B\\mid A)P(A)}{P(B)}",
+  "position": "end",
+  "layout": "numbered",
+  "font_size_pt": 12
+}
+```
+
+移动或删除自动编号公式后，让助手刷新公式编号。具体效果可查看 [中文混排](docs/images/chinese-inline.png)、[英文混排](docs/images/english-inline.png) 和 [带编号公式](docs/images/numbered.png) 示例。
+
+## 3. 在 PowerPoint 中使用
+
+打开目标演示文稿后，先让助手列出幻灯片，再指定要编辑的页面。例如：
+
+> 在“研究汇报.pptx”的第 2 张幻灯片中插入贝叶斯公式，字号 24 磅，距左边 1 英寸、距上边 2 英寸，编号显示为 `(1)`，先不要保存。
+
+> 读取第 2 张幻灯片中的这条 AxMath 公式，把它改成 `a^2+b^2=c^2`，保留位置和字号。
+
+> 将这条公式向右移动一些，保持关联编号一起移动，然后另存为 `C:\Documents\研究汇报修订.pptx`。
+
+PowerPoint 的公式是幻灯片上的独立对象，可以与中英文文本框一起排版；它不会变成文本框内部的行内文字。编号是与公式关联的固定文字标签，不使用 Word 的自动序号域。
+
+`ppt_insert_axmath` 的定位使用磅（pt），**72 pt = 1 英寸**，从幻灯片左上角计算：
+
+```json
+{
+  "presentation_id": "使用工具返回的演示文稿 ID",
+  "slide_id": 256,
+  "latex": "P(A\\mid B)=\\frac{P(B\\mid A)P(A)}{P(B)}",
+  "left_pt": 72,
+  "top_pt": 144,
+  "font_size_pt": 24,
+  "number_label": "(1)"
+}
+```
+
+这里的 `slide_id` 必须来自幻灯片列表，示例中的 `256` 只是占位值，不能直接把“第 2 页”当作 ID。更新公式保留当前左上角位置和字号；移动公式使用定位工具。
+
+如果公式由其他方式创建，或已在 PowerPoint 中手工拖动缩放，更新时请明确指定 `font_size_pt`。首版不替换组合、旋转、翻转、带动画／动作或连接器绑定的公式；表格和母版中的对象也不在支持范围内。效果示例：[带编号公式](docs/images/powerpoint-numbered.png) · [矩阵公式](docs/images/powerpoint-matrix.png)。
+
+## 4. 修改后保存
+
+插入、修改、排版和移动公式不会自动保存文件。满意后明确告诉助手“保存”或“另存为”。新文件需要完整的 `.docx` 或 `.pptx` 路径，目标文件夹须已存在；覆盖其他已有文件需要明确授权。
+
+转换过程中请暂停在 Word、PowerPoint 和 AxMath 中输入。服务会临时使用 Office 选区和系统剪贴板；如果打开 AxMath 编辑器进行人工编辑，应先完成并关闭编辑器，再继续调用工具。
+
+## 常用工具
+
+| 任务 | 工具 |
+| --- | --- |
+| 检查环境 | `axmath_health` |
+| 查找 Word 文档和公式 | `word_list_documents`、`word_list_equations` |
+| 插入、修改、排版 Word 公式 | `word_insert_axmath`、`word_update_axmath`、`word_format_axmath` |
+| 刷新 Word 自动编号、保存 | `word_refresh_equation_numbers`、`word_save_document` |
+| 查找演示文稿、幻灯片和公式 | `ppt_list_presentations`、`ppt_list_slides`、`ppt_list_equations` |
+| 插入、修改、移动幻灯片公式 | `ppt_insert_axmath`、`ppt_update_axmath`、`ppt_position_axmath` |
+| 保存演示文稿 | `ppt_save_presentation` |
+
+两种应用也提供打开或新建文件、读取 LaTeX 和打开 AxMath 编辑器的工具。文件和公式 ID 由服务返回；重启服务后应重新列出对象，不要沿用旧 ID。
+
+## 常见问题
+
+**找不到工具。** 先重新加载 MCP；仍不可用时重启客户端，并运行安装步骤最后的诊断命令。确认客户端使用的是此项目的 Windows 环境。
+
+**PowerPoint 已安装，为什么还要求 Word？** 当前使用 Word 的 AxMath 插件完成 LaTeX 转换，再把原生公式对象放入 PowerPoint，因此需要 Word 和 `AxMath.dotm`。这条路径不依赖 `AxMath.ppam`。
+
+**宏调用失败或提示 COM 拒绝访问。** 先确认 Word 中能手动使用 AxMath，且服务与 Office 在同一 Windows 用户桌面会话中运行。需要时修复 AxMath 的 Word 插件；服务不会关闭 Office 的宏安全设置。
+
+**转换很慢或超时。** 检查 Office/AxMath 是否有等待处理的对话框。取消客户端等待不代表转换已取消，应先检查实际文档，再决定是否重试，避免重复插入。
+
+**LaTeX 转换结果不符合预期。** 每次提供一条数学表达式，不要传入整份 LaTeX 文档、宏定义或文件读写命令。AxMath 可能规范化导出的表达式；仍需检查公式的数学含义和显示效果。
+
+**已有图片或 Word 原生公式没有列出。** 本服务处理原生 `Equation.AxMath` OLE 对象。图片、Word OMML 和 MathType 对象不会自动变成 AxMath 公式。
+
+## 更多文档
+
+- [测试方法与已验证范围](docs/testing.md)
+- [开发、构建与 GitHub 发布](docs/development.md)
+- [Codex 配置模板](config/codex.toml) · [通用 MCP 配置模板](config/mcp.json)
+
+当前项目的开源许可证仍需维护者选择并添加 `LICENSE`。Office 与 AxMath 的授权由用户自行准备。

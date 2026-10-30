@@ -1,0 +1,88 @@
+name: 问题反馈 / Bug report
+description: 报告安装、MCP 调用或 Word / PowerPoint 公式问题。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请提供最小复现步骤。不要粘贴许可证、密钥、私人文档内容或包含敏感信息的完整日志；本表单不要求上传原始 Office 文件。
+  - type: input
+    id: mcp_version
+    attributes:
+      label: AxMath MCP 版本
+      description: 例如 axmath_health 返回的 version，或安装的 Git tag / commit。
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: windows_version
+    attributes:
+      label: Windows 版本
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: true
+  - type: input
+    id: word_version
+    attributes:
+      label: Word 版本与位数
+      description: 可在 Word 的“账户 → 关于 Word”中查看。
+      placeholder: "Microsoft 365 Word 16.0，64 位"
+    validations:
+      required: true
+  - type: input
+    id: powerpoint_version
+    attributes:
+      label: PowerPoint 版本与位数（使用 PPT 功能时填写）
+      placeholder: "Microsoft 365 PowerPoint 16.0，64 位"
+  - type: input
+    id: axmath_version
+    attributes:
+      label: AxMath 版本
+      description: 仅填写版本，不要提供授权信息。
+      placeholder: "2.7061"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Python、uv 与 MCP 客户端版本
+      placeholder: "Python 3.12.x；uv 0.x；Codex / 其他客户端及版本"
+    validations:
+      required: true
+  - type: dropdown
+    id: layout
+    attributes:
+      label: 涉及的排版类型
+      options:
+        - "不涉及排版 / 安装或连接问题"
+        - "inline：行内公式"
+        - "display：独立居中公式"
+        - "numbered：带编号公式"
+        - "多种排版之间切换"
+        - "PowerPoint：公式插入、修改或读取"
+        - "PowerPoint：位置、字号或固定编号"
+    validations:
+      required: true
+  - type: input
+    id: fonts
+    attributes:
+      label: 正文字体、字号与公式字号
+      description: 排版问题请填写；安装问题可留空。
+      placeholder: "宋体 / Times New Roman 12 磅；公式 12 磅；原段落最小行距 18 磅"
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 最小复现步骤
+      description: 使用不含私人内容的公式和工具参数，说明预期与实际表现。
+      placeholder: |
+        1. 新建空白 Word 文档。
+        2. 调用工具……
+        3. 预期……；实际……
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: 错误信息或诊断结果
+      description: 粘贴相关片段即可；先删除用户名、个人路径和文档内容等敏感信息。
+      render: text
