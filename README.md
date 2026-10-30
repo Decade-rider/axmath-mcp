@@ -14,7 +14,7 @@ Word 与 PowerPoint 使用同一个 `axmath` 服务，只需安装和连接一�
 
 本项目不包含 Office、AxMath 或其授权，不需要为这个 MCP 服务另外填写大模型 API Key。模型由你使用的 MCP 客户端提供。
 
-## 1. 安装并连接 Codex
+## 1. 安装并选择连接方式
 
 将 `YOUR_GITHUB_USER` 替换为实际仓库的用户名或组织名；下面的仓库地址是占位符。
 
@@ -22,13 +22,37 @@ Word 与 PowerPoint 使用同一个 `axmath` 服务，只需安装和连接一�
 git clone https://github.com/YOUR_GITHUB_USER/axmath-mcp.git
 Set-Location axmath-mcp
 uv sync --locked --default-index https://pypi.org/simple
-uv run --no-sync python scripts/register_codex.py --install
-uv run --no-sync python scripts/smoke_mcp.py
 ```
 
-也可以下载仓库 ZIP，解压并进入项目目录后执行后三条命令。首次同步需要联网，并会创建项目独立的 `.venv`。
+也可以下载仓库 ZIP，解压并进入项目目录后执行 `uv sync` 那一条命令。首次同步需要联网，并会创建项目独立的 `.venv`。随后选择一种连接方式。
+
+**直接连接 Codex：**
+
+```powershell
+uv run --no-sync python scripts/register_codex.py --install
+```
 
 注册脚本会识别你电脑上的项目位置和 `uv.exe` 路径，保留原 Codex 配置。相同配置不重复写入；同名配置不同则提示冲突，不直接覆盖。
+
+**通过 CC Switch 管理：**
+
+目标客户端（如 Codex 或 Claude Code）先安装并启动一次。然后在项目目录生成本机配置：
+
+```powershell
+uv run --no-sync python scripts/export_mcp_config.py
+```
+
+复制输出的整段 JSON，在 CC Switch 中选择 **MCP → 添加 MCP → 粘贴配置**，连接方式为本地命令（stdio），在“写入到”勾选目标客户端并保存。也可以在 PowerShell 中运行 `uv run --no-sync python scripts/export_mcp_config.py | Set-Clipboard`，直接把配置放到剪贴板。这条连接方式无需再运行 Codex 注册脚本。
+
+如果只同步给 Codex，使用 `scripts/export_mcp_config.py --codex`，会附带 300 秒工具超时；同步其他客户端时使用通用输出，并按目标客户端的设置调整超时。手动配置参考 [CC Switch JSON 模板](config/cc-switch.json)，需修改其中的项目路径；自动导出无需改路径。
+
+如果此前已经用注册脚本配置 Codex，可以在 CC Switch 的 MCP 页面选择“从应用导入”，将现有 `axmath` 条目纳入管理。同名配置以后以 CC Switch 中的内容为准。菜单与导入格式依据 [CC Switch 官方手册](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.1-mcp.md)。
+
+**检查安装：**
+
+```powershell
+uv run --no-sync python scripts/smoke_mcp.py
+```
 
 完成后，在客户端重新加载 MCP 服务，必要时重启客户端。服务由客户端自动启动，日常使用无需单独打开终端运行。移动项目目录后，需要更新客户端中的路径配置。
 
@@ -52,11 +76,11 @@ uv run --no-sync python scripts/smoke_mcp.py
 
 Word 支持三种排版：
 
-| 排版 | 适合的场景 | 参数 |
-| --- | --- | --- |
-| 行内 | 与中文或英文正文混排 | `layout: "inline"` |
-| 独立居中 | 公式单独占一段 | `layout: "display"` |
-| 带编号 | 公式居中、编号在右侧 | `layout: "numbered"` |
+| 排版     | 适合的场景           | 参数                   |
+| -------- | -------------------- | ---------------------- |
+| 行内     | 与中文或英文正文混排 | `layout: "inline"`   |
+| 独立居中 | 公式单独占一段       | `layout: "display"`  |
+| 带编号   | 公式居中、编号在右侧 | `layout: "numbered"` |
 
 带编号时，省略 `number_label` 会生成自动序号；给出 `"(A.1)"` 等文本则使用固定编号。插入位置支持正文末尾、书签或已检查的当前选区。修改已有公式时，先列出公式，再按返回的 ID 操作。
 
@@ -112,15 +136,15 @@ PowerPoint 的公式是幻灯片上的独立对象，可以与中英文文本框
 
 ## 常用工具
 
-| 任务 | 工具 |
-| --- | --- |
-| 检查环境 | `axmath_health` |
-| 查找 Word 文档和公式 | `word_list_documents`、`word_list_equations` |
-| 插入、修改、排版 Word 公式 | `word_insert_axmath`、`word_update_axmath`、`word_format_axmath` |
-| 刷新 Word 自动编号、保存 | `word_refresh_equation_numbers`、`word_save_document` |
+| 任务                       | 工具                                                                    |
+| -------------------------- | ----------------------------------------------------------------------- |
+| 检查环境                   | `axmath_health`                                                       |
+| 查找 Word 文档和公式       | `word_list_documents`、`word_list_equations`                        |
+| 插入、修改、排版 Word 公式 | `word_insert_axmath`、`word_update_axmath`、`word_format_axmath`  |
+| 刷新 Word 自动编号、保存   | `word_refresh_equation_numbers`、`word_save_document`               |
 | 查找演示文稿、幻灯片和公式 | `ppt_list_presentations`、`ppt_list_slides`、`ppt_list_equations` |
-| 插入、修改、移动幻灯片公式 | `ppt_insert_axmath`、`ppt_update_axmath`、`ppt_position_axmath` |
-| 保存演示文稿 | `ppt_save_presentation` |
+| 插入、修改、移动幻灯片公式 | `ppt_insert_axmath`、`ppt_update_axmath`、`ppt_position_axmath`   |
+| 保存演示文稿               | `ppt_save_presentation`                                               |
 
 两种应用也提供打开或新建文件、读取 LaTeX 和打开 AxMath 编辑器的工具。文件和公式 ID 由服务返回；重启服务后应重新列出对象，不要沿用旧 ID。
 
