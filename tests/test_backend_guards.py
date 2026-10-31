@@ -172,7 +172,10 @@ def test_ole_hidden_field_span_is_accepted_without_repeating_insertion(word):
             self.InlineShapes = Mock(Count=1, return_value=inserted_shape)
 
     target = Destination()
-    generated = SimpleNamespace(Range=SimpleNamespace(FormattedText=generated_text))
+    target.Application = app
+    generated = SimpleNamespace(
+        Range=SimpleNamespace(FormattedText=generated_text, Application=app)
+    )
 
     def get_range(start, end):
         # A one-position range excludes the OLE's hidden EMBED field characters.

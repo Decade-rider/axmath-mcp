@@ -11,7 +11,7 @@ body:
     attributes:
       label: AxMath MCP 版本
       description: 例如 axmath_health 返回的 version，或安装的 Git tag / commit。
-      placeholder: "0.3.0"
+      placeholder: "0.4.0"
     validations:
       required: true
   - type: input

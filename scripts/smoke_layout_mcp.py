@@ -109,18 +109,17 @@ async def exercise_layouts(session: ClientSession, report: dict[str, Any]) -> No
     assert math.isclose(displayed["font_size_pt"], 14, abs_tol=0.01)
     await check_current(equation_id, "display", None, 0)
 
-    manual = await call(
-        "reformat_manual_number",
+    numbered = await call(
+        "reformat_native_number",
         "word_format_axmath",
         document_id=document_id,
         equation_id=equation_id,
         layout="numbered",
-        number_label="(A.1)",
     )
-    assert manual["equation_id"] == equation_id
-    assert manual["number_label"] == manual["number_text"] == "(A.1)"
-    assert math.isclose(manual["font_size_pt"], 14, abs_tol=0.01)
-    await check_current(equation_id, "numbered", "(A.1)", 0)
+    assert numbered["equation_id"] == equation_id
+    assert numbered["number_label"] is None and numbered["number_text"] == "(1)"
+    assert math.isclose(numbered["font_size_pt"], 14, abs_tol=0.01)
+    await check_current(equation_id, "numbered", "(1)", 1)
 
     target = ROOT / "artifacts/layout-validation" / (report["run_id"] + ".docx")
     saved = await call("save", "word_save_document", document_id=document_id, path=str(target))
@@ -129,19 +128,21 @@ async def exercise_layouts(session: ClientSession, report: dict[str, Any]) -> No
         document_xml = ET.fromstring(package.read("word/document.xml"))
     ns_word = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
     ns_ole = "{urn:schemas-microsoft-com:office:office}"
-    visible_text = "".join(node.text or "" for node in document_xml.iter(ns_word + "t"))
     field_codes = " ".join(node.text or "" for node in document_xml.iter(ns_word + "instrText"))
     objects = list(document_xml.iter(ns_ole + "OLEObject"))
     assert len(objects) == 1 and objects[0].attrib["ProgID"] == "Equation.AxMath"
-    assert visible_text.count("(A.1)") == 1, (
-        "Manual number missing or duplicated in saved document."
+    assert "AMMPlaceRM" in field_codes and "SEQ AMEqn" in field_codes
+    from axmath_mcp.font_metrics import equation_run_metrics
+
+    assert (
+        equation_run_metrics(ET.tostring(document_xml, encoding="unicode"))["baseline_offset_pt"]
+        < 0
     )
-    assert "(1)" not in visible_text, "A stale automatic number remains in the document."
     assert not re.search(r"\bSEQ\s+AxMathEquation\b", field_codes, re.IGNORECASE)
     report["summary"] = {
         "saved_document": str(target),
         "final_layout": "numbered",
-        "final_number": "(A.1)",
+        "final_number": "(1)",
         "font_size_pt": 14,
         "native_ole_count": 1,
         "stale_auto_numbers": 0,

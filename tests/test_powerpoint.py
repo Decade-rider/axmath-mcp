@@ -88,7 +88,7 @@ def deck(tmp_path):
         SaveAs=Mock(),
     )
     word = Mock()
-    word._conversion.side_effect = lambda _: nullcontext()
+    word._conversion.side_effect = lambda *_: nullcontext(object())
     word._generated.side_effect = lambda *_: nullcontext((object(), "$x$"))
     backend = ppt.PowerPointBackend(word)
     backend._presentations["pres_test"] = pres

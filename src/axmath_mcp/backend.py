@@ -6,6 +6,7 @@ No macro-security settings are relaxed and no existing document is saved implici
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 import winreg
@@ -21,6 +22,7 @@ import win32event
 import win32file
 
 from axmath_mcp import __version__
+from axmath_mcp.axmath_compat import check_axmath_input
 from axmath_mcp.font_metrics import equation_font_size
 from axmath_mcp.layout import (
     check_block_fits,
@@ -37,6 +39,10 @@ from axmath_mcp.validation import (
     validate_layout_options,
     validate_local_path,
 )
+from axmath_mcp.word_transfer import copy_native_range
+from axmath_mcp.word_workspace import ConversionWorkspace
+
+logger = logging.getLogger(__name__)
 
 PROGID = "Equation.AxMath"
 TO_AXMATH = "AMCCTex2AMEqn.ConvertScript2AMEqn"
@@ -86,14 +92,35 @@ class WordBackend:
         self._apps: list[Any] = []
         self._documents: dict[str, Any] = {}
         self._equations: dict[str, tuple[str, Any]] = {}
+        self._workspace = ConversionWorkspace()
+        self._conversion_app = None
+        self._restore_state_warnings: list[str] = []
+        self._recovery_warnings: list[str] = []
+        self._busy_recoveries = 0
         self._mutex = win32event.CreateMutex(None, False, "Local\\AxMathMCP.Automation")
 
     def shutdown(self) -> None:
-        # Word documents belong to the user, including unsaved documents we created.
-        self._equations.clear()
-        self._documents.clear()
-        self._apps.clear()
-        win32api.CloseHandle(self._mutex)
+        # Close only tracked internal scratch documents. User documents, including
+        # files explicitly created by tools, remain owned by the user.
+        try:
+            self._workspace.shutdown()
+        finally:
+            self._equations.clear()
+            self._documents.clear()
+            self._apps.clear()
+            win32api.CloseHandle(self._mutex)
+
+    def conversion_status(self) -> dict[str, Any]:
+        status = self._workspace.status()
+        status["cleanup_warnings"] += self._restore_state_warnings + self._recovery_warnings
+        status["recovered_owned_busy_flags"] = self._busy_recoveries
+        return status
+
+    def _converter_app(self) -> Any:
+        # Remember the user's current Word instance before the private converter
+        # has a chance to become Word's active COM registration.
+        self._active_app()
+        return self._workspace.get_app()
 
     def health(self) -> dict[str, Any]:
         server = _reg(winreg.HKEY_CLASSES_ROOT, PROGID + r"\protocol\StdFileEditing\server")
@@ -102,6 +129,7 @@ class WordBackend:
         return {
             "platform": "win32",
             "version": __version__,
+            "conversion_workspace": self.conversion_status(),
             "word_registered": bool(_reg(winreg.HKEY_CLASSES_ROOT, r"Word.Application\CLSID")),
             "axmath_registered": bool(server),
             "axmath_executable": server,
@@ -123,23 +151,29 @@ class WordBackend:
         }
 
     def _remember_app(self, app: Any) -> Any:
+        if self._workspace.owns_app(app):
+            raise RuntimeError("The internal conversion Word instance is not a user document host.")
         if not any(_same(app, previous) for previous in self._apps):
             self._apps.append(app)
         return app
 
     def _active_app(self, create: bool = False) -> Any | None:
         try:
-            return self._remember_app(win32com.client.GetActiveObject("Word.Application"))
+            app = win32com.client.GetActiveObject("Word.Application")
         except pywintypes.com_error:
-            for app in self._apps:
-                try:
-                    _ = app.Documents.Count
-                    return app
-                except pywintypes.com_error:
-                    continue
-            if create:
-                return self._remember_app(win32com.client.DispatchEx("Word.Application"))
-            return None
+            app = None
+        if app is not None and not self._workspace.owns_app(app):
+            return self._remember_app(app)
+        for previous in self._apps:
+            try:
+                if not self._workspace.owns_app(previous):
+                    _ = previous.Documents.Count
+                    return previous
+            except pywintypes.com_error:
+                continue
+        if create:
+            return self._remember_app(win32com.client.DispatchEx("Word.Application"))
+        return None
 
     def _remember_doc(self, doc: Any) -> str:
         for document_id, previous in self._documents.items():
@@ -318,54 +352,88 @@ class WordBackend:
             )
 
     @contextmanager
-    def _conversion(self, app: Any):
+    def _conversion(self, app: Any = None):
         status = win32event.WaitForSingleObject(self._mutex, 0)
         if status not in (win32event.WAIT_OBJECT_0, win32event.WAIT_ABANDONED):
             raise RuntimeError("Another AxMath MCP conversion is running. Wait before retrying.")
         original_doc = original_selection = None
         try:
+            if app is None:
+                if (
+                    _reg(winreg.HKEY_CURRENT_USER, r"Software\AxMath\WordCmds", "ConvertOccupy")
+                    == "1"
+                ):
+                    raise RuntimeError("AxMath is busy. Finish the current AxMath operation first.")
+                app = self._converter_app()
             self._ready(app)
             if app.Documents.Count:
                 original_doc = app.ActiveDocument
                 original_selection = app.Selection.Range.Duplicate
             screen = app.ScreenUpdating
-            smart = app.Options.SmartCutPaste
-            paste_smart = app.Options.PasteSmartCutPaste
-            replace = app.Options.ReplaceSelection
+            options = app.Options
+            smart = options.SmartCutPaste
+            paste_smart = options.PasteSmartCutPaste
+            replace = options.ReplaceSelection
+            previous_conversion = getattr(self, "_conversion_app", None)
+            self._conversion_app = app
             try:
-                yield
+                yield app
             finally:
-                app.ScreenUpdating = screen
-                app.Options.SmartCutPaste = smart
-                app.Options.PasteSmartCutPaste = paste_smart
-                app.Options.ReplaceSelection = replace
+                self._restore_state_warnings = []
+                for obj, name, value in (
+                    (app, "ScreenUpdating", screen),
+                    (options, "SmartCutPaste", smart),
+                    (options, "PasteSmartCutPaste", paste_smart),
+                    (options, "ReplaceSelection", replace),
+                ):
+                    try:
+                        setattr(obj, name, value)
+                    except pywintypes.com_error as exc:
+                        warning = f"Private Word state restore pending ({name}): {exc}"
+                        self._restore_state_warnings.append(warning)
+                        logger.warning(warning)
                 if original_doc is not None:
                     try:
                         original_doc.Activate()
                         original_selection.Select()
                     except pywintypes.com_error:
                         pass
+                self._conversion_app = previous_conversion
         finally:
             win32event.ReleaseMutex(self._mutex)
 
     @contextmanager
     def _scratch(self, app: Any):
-        doc = app.Documents.Add(Visible=False)
-        try:
-            doc.TrackRevisions = False
-            doc.Activate()
+        if not self._workspace.owns_app(app):
+            raise RuntimeError("Scratch documents must use the private conversion Word instance.")
+        with self._workspace.scratch() as doc:
             yield doc
-        finally:
-            doc.Close(0)
 
     def _run_macro(self, app: Any, macro: str) -> None:
+        owned = (
+            getattr(self, "_conversion_app", None) is app
+            and hasattr(self, "_workspace")
+            and self._workspace.owns_app(app)
+        )
+        initial_busy = (
+            _reg(winreg.HKEY_CURRENT_USER, r"Software\AxMath\WordCmds", "ConvertOccupy")
+            if owned
+            else None
+        )
+        if owned and initial_busy == "1":
+            raise RuntimeError("AxMath became busy before this macro started; no state was reset.")
+        error = None
         try:
             result = app.Run(macro, False, False)
         except pywintypes.com_error as exc:
+            error = exc
             raise RuntimeError(
                 "AxMath macro failed. Check Word/AxMath dialogs and the installed add-in; "
                 "no automatic retry is performed. " + str(exc)
             ) from exc
+        finally:
+            if owned:
+                self._recover_completed_macro(app, initial_busy, error)
         if not result:
             raise RuntimeError(
                 "AxMath did not convert the selected formula; check its LaTeX support."
@@ -376,22 +444,87 @@ class WordBackend:
                 "target document was not changed. Inspect Word/AxMath before another request."
             )
 
+    def _recover_completed_macro(self, app: Any, initial_busy: str | None, error: Any) -> None:
+        """Release only our acknowledged, finished macro, never an existing busy state."""
+        if initial_busy != "0":
+            return
+        # These transport failures do not prove that the native operation ended.
+        uncertain = {-2147418111, -2147417846, -2147417848, -2147220995}
+        if error is not None:
+            codes = [error.hresult]
+            if error.excepinfo and len(error.excepinfo) > 5:
+                codes.append(error.excepinfo[5])
+            # Word can wrap an RPC failure in DISP_E_EXCEPTION, and COM callers
+            # may expose either signed or unsigned 32-bit HRESULT values.
+            normalized = {
+                code if code < 2**31 else code - 2**32 for code in codes if isinstance(code, int)
+            }
+            if normalized & uncertain:
+                return
+        key = r"Software\AxMath\WordCmds"
+        if _reg(winreg.HKEY_CURRENT_USER, key, "ConvertOccupy") != "1":
+            return
+        if any(
+            _reg(winreg.HKEY_CURRENT_USER, key, n) != "0" for n in ("AxMathOccupy", "DoVerbOccupy")
+        ):
+            return
+        if _reg(winreg.HKEY_CURRENT_USER, key, "WaitingConvert") != "1":
+            return
+        try:
+            _ = app.Documents.Count  # The private Word server must still respond.
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as handle:
+                winreg.SetValueEx(handle, "ConvertOccupy", 0, winreg.REG_SZ, "0")
+            self._busy_recoveries += 1
+            self._recovery_warnings = []
+        except (OSError, pywintypes.com_error) as exc:
+            self._recovery_warnings = [
+                f"Could not release completed private conversion state: {exc}"
+            ]
+
     def _export_copy(self, app: Any, shape: Any) -> str:
         with self._scratch(app) as copy:
-            copy.Range(0, 0).FormattedText = shape.Range.FormattedText
-            copy.Content.Select()
-            self._run_macro(app, TO_LATEX)
-            source = str(copy.Content.Text).replace("\r\n", "\n").replace("\r", "\n").strip()
-            if copy.InlineShapes.Count or not source or "\x01" in source:
-                raise RuntimeError(
-                    "AxMath round-trip export failed; target document was not changed."
-                )
-            # Check nonempty content; do not claim semantic equality after vendor normalization.
-            normalize_latex(source)
-            return source
+            copy_native_range(copy.Range(0, 0), shape.Range)
+            return self._export_inplace(app, copy)
+
+    def _export_inplace(self, app: Any, doc: Any) -> str:
+        if not self._workspace.owns_document(doc):
+            raise RuntimeError("Destructive LaTeX export is restricted to owned scratch documents.")
+        doc.Activate()
+        doc.Content.Select()
+        self._run_macro(app, TO_LATEX)
+        source = self._validated_export_text(doc.Content.Text)
+        if doc.InlineShapes.Count:
+            raise RuntimeError("AxMath export left an unconverted object in the scratch copy.")
+        return source
+
+    @staticmethod
+    def _validated_export_text(text: str) -> str:
+        source = str(text).replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not source or "\x01" in source:
+            raise RuntimeError("AxMath round-trip export failed; target document was not changed.")
+        normalize_latex(source)
+        return source
+
+    def _verify_generated(self, app: Any, scratch: Any, shape: Any) -> str:
+        # Verify a duplicate in a second paragraph of the SAME scratch document.
+        # Only the duplicate is selected; the original native object stays intact.
+        start = int(scratch.Content.End - 1)
+        duplicate = scratch.Range(start, start)
+        duplicate.FormattedText = shape.Range.FormattedText
+        duplicate.Select()
+        self._run_macro(app, TO_LATEX)
+        tail = scratch.Range(start, scratch.Content.End - 1)
+        source = self._validated_export_text(tail.Text)
+        tail.Delete()
+        if scratch.InlineShapes.Count != 1 or not self._is_equation(shape):
+            raise RuntimeError(
+                "AxMath round-trip modified the original scratch formula unexpectedly."
+            )
+        return source
 
     @contextmanager
     def _generated(self, app: Any, source: str, font_size: float = 12):
+        check_axmath_input(source)
         with self._scratch(app) as scratch:
             scratch.Content.Font.Size = font_size if 1 <= font_size <= 1638 else 12
             scratch.Content.Text = source + "\r"
@@ -407,7 +540,7 @@ class WordBackend:
             shape.Range.Font.Size = font_size
             if shape.Width <= 0 or shape.Height <= 0:
                 raise RuntimeError("AxMath produced an empty display; target was not changed.")
-            actual_latex = self._export_copy(app, shape)
+            actual_latex = self._verify_generated(app, scratch, shape)
             yield shape, actual_latex
 
     def _insertion_range(
@@ -451,7 +584,7 @@ class WordBackend:
         start = int(target.Start)
         doc.Application.UndoRecord.StartCustomRecord("AxMath MCP equation")
         try:
-            target.FormattedText = generated.Range.FormattedText
+            copy_native_range(target, generated.Range)
         finally:
             doc.Application.UndoRecord.EndCustomRecord()
         # Word's OLE range can include hidden field characters (28 positions on
@@ -487,8 +620,8 @@ class WordBackend:
         original_text = str(target.Text)
         size = options.font_size_pt or self._font_size(target)
         with (
-            self._conversion(doc.Application),
-            self._generated(doc.Application, source, size) as (
+            self._conversion() as converter,
+            self._generated(converter, source, size) as (
                 shape,
                 actual,
             ),
@@ -522,8 +655,8 @@ class WordBackend:
         source = latex_for_layout(latex, options.layout)
         size = self._font_size(original.Range)
         with (
-            self._conversion(doc.Application),
-            self._generated(doc.Application, source, size) as (
+            self._conversion() as converter,
+            self._generated(converter, source, size) as (
                 shape,
                 actual,
             ),
@@ -559,9 +692,9 @@ class WordBackend:
         preflight_numbers(doc)
         expected = str(target.Text)
         size = options.font_size_pt or self._font_size(original.Range)
-        with self._conversion(doc.Application):
-            source = self._export_copy(doc.Application, original)
-            with self._generated(doc.Application, latex_for_layout(source, layout), size) as (
+        with self._conversion() as converter:
+            source = self._export_copy(converter, original)
+            with self._generated(converter, latex_for_layout(source, layout), size) as (
                 shape,
                 actual,
             ):
@@ -588,10 +721,9 @@ class WordBackend:
         return result
 
     def get_equation_latex(self, document_id: str, equation_id: str) -> dict[str, Any]:
-        doc = self._doc(document_id)
         shape = self._eq(document_id, equation_id)
-        with self._conversion(doc.Application):
-            source = self._export_copy(doc.Application, shape)
+        with self._conversion() as converter:
+            source = self._export_copy(converter, shape)
         return {
             "document_id": document_id,
             "equation_id": equation_id,

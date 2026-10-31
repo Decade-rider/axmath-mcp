@@ -28,7 +28,7 @@ Word 转换在临时文档中完成：调用用户已安装的 AxMath 插件，�
 
 PowerPoint 功能复用 Word 中的 AxMath 转换，从临时范围的 WordOpenXML 提取单一原生 OLE 存储，通过 `Shapes.AddOLEObject` 嵌入幻灯片，并再次检查 `Equation.AxMath` ProgID。读取时将 PowerPoint 对象复制到临时 Word 文档，必要时将浮动 OLE 转为行内对象，再调用 AxMath 导出。它需要本机 Word 和 `AxMath.dotm`，不依赖 `AxMath.ppam` 的 LaTeX 接口。公式定位以幻灯片左上角为原点，单位为磅；编号是关联文本框中的固定标签，不使用 Word 的 SEQ 域。PowerPoint Tags 只保存字号、尺寸和关联对象 ID，不保存可能被自动大写的 LaTeX。
 
-Word 独立公式使用 `AxMathMCP_Display`、`AxMathMCP_Numbered` 段落样式；自动编号是 `SEQ AxMathEquation` 字段。更新公式内容时保留编号，刷新编号时只更新本项目的序列字段。设置段落样式应早于复制公式，以免 Word 链接样式清除 AxMath 的原生基线偏移。
+Word 独立公式使用 `AxMathMCP_Display`、`AxMathMCP_Numbered` 段落样式；自动编号由已安装插件的 `AMCEqnNum.InsertEqnNum` 生成，包含原生 `AMMPlaceRM` 和嵌套 `AMEqn` 域；不再生成或维护旧版 `AxMathEquation` 序列。默认使用文档级 `(#E1)` 格式，拒绝覆盖已有章节格式。调用期间临时延迟厂商的全域更新，并跳过普通连续编号不需要的章节初始化，之后恢复文档属性。更新公式内容时保留编号，刷新编号时仅更新 AxMath 的 `AMEqn`、`AMChap`、`AMSec` 序列，避免刷新外部链接等无关域。设置段落样式应早于复制公式；原生编号宏再次改变样式后，恢复公式字体、字号、基线和段落格式。
 
 AxMath 集成使用已安装插件中的转换入口。厂商宏不是公开承诺稳定的 SDK；升级 AxMath 后必须重新验证。项目不分发 AxMath 程序、插件或其源码，不修改软件授权状态或 Office 宏安全策略。
 

@@ -4,19 +4,30 @@ from __future__ import annotations
 
 import re
 import uuid
+from functools import lru_cache
 from typing import Any
 
+from axmath_mcp.font_metrics import equation_font_size, read_equation_metrics
+from axmath_mcp.native_numbering import insert_native_number, preflight_native_numbering
 from axmath_mcp.validation import LayoutOptions
 
 DISPLAY_STYLE = "AxMathMCP_Display"
 NUMBERED_STYLE = "AxMathMCP_Numbered"
 NUMBER_BOOKMARK = "AxMathMCP_N_"
-SEQUENCE = "AxMathEquation"
-_SEQ_CODE = re.compile(r"^\s*SEQ\s+AxMathEquation(?:\s|$)", re.IGNORECASE)
+NUMBER_GAP_PT = 8.0
+_NATIVE_SEQ = re.compile(r"^\s*SEQ\s+(AMEqn|AMChap|AMSec)(?:\s|$)", re.IGNORECASE)
 
 
 def is_number_field(field: Any) -> bool:
-    return int(field.Type) == 12 and bool(_SEQ_CODE.match(str(field.Code.Text)))
+    code = str(field.Code.Text)
+    return int(field.Type) == 12 and bool(_NATIVE_SEQ.match(code))
+
+
+def is_visible_number(field: Any) -> bool:
+    code = str(field.Code.Text)
+    return is_number_field(field) and (
+        bool(re.match(r"\s*SEQ\s+AMEqn\s+\\c(?:\s|$)", code, re.IGNORECASE))
+    )
 
 
 def preflight_numbers(doc: Any) -> None:
@@ -33,7 +44,8 @@ def refresh_numbers(doc: Any) -> dict[str, Any]:
         if is_number_field(field):
             if not field.Update():
                 raise RuntimeError("Word could not update an AxMath equation number.")
-            updated.append(str(field.Result.Text))
+            if is_visible_number(field):
+                updated.append(str(field.Result.Text))
     return {"updated_count": len(updated), "numbers": updated}
 
 
@@ -46,7 +58,10 @@ def describe_layout(shape: Any) -> dict[str, Any]:
         markers = [b for b in paragraph.Range.Bookmarks if str(b.Name).startswith(NUMBER_BOOKMARK)]
         if len(markers) == 1:
             number = markers[0].Range
-            result["number_text"] = str(number.Text)
+            native = [f for f in number.Fields if is_visible_number(f)]
+            result["number_text"] = (
+                "(" + str(native[0].Result.Text) + ")" if native else str(number.Text)
+            )
             if not any(is_number_field(f) for f in number.Fields):
                 result["number_label"] = str(number.Text)
     return result
@@ -94,13 +109,88 @@ def available_width(target: Any) -> float:
     return float(setup.PageWidth - setup.LeftMargin - setup.RightMargin - gutter)
 
 
+@lru_cache(maxsize=256)
+def _number_text_width_em(text: str) -> float:
+    """Measure the actual number typeface using a printer-independent memory DC.
+
+    A large negative font height requests a 1024-unit character em. Scaling the
+    measured width back to points avoids screen-DPI/font-size rounding. GDI uses
+    the selected Times New Roman font; no printer or Office application is opened.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    if not hasattr(ctypes, "WinDLL"):
+        raise RuntimeError("Equation-number measurement requires Windows GDI.")
+    gdi = ctypes.WinDLL("gdi32", use_last_error=True)
+    gdi.CreateCompatibleDC.argtypes = [wintypes.HDC]
+    gdi.CreateCompatibleDC.restype = wintypes.HDC
+    gdi.DeleteDC.argtypes = [wintypes.HDC]
+    gdi.DeleteDC.restype = wintypes.BOOL
+    gdi.CreateFontW.argtypes = [ctypes.c_int] * 5 + [wintypes.DWORD] * 8 + [wintypes.LPCWSTR]
+    gdi.CreateFontW.restype = wintypes.HFONT
+    gdi.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+    gdi.SelectObject.restype = wintypes.HGDIOBJ
+    gdi.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    gdi.DeleteObject.restype = wintypes.BOOL
+    gdi.GetTextExtentPoint32W.argtypes = [
+        wintypes.HDC,
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        ctypes.POINTER(wintypes.SIZE),
+    ]
+    gdi.GetTextExtentPoint32W.restype = wintypes.BOOL
+    dc = gdi.CreateCompatibleDC(None)
+    if not dc:
+        raise RuntimeError("Could not create the equation-number measurement context.")
+    font = old_font = None
+    try:
+        font = gdi.CreateFontW(-1024, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, "Times New Roman")
+        if not font:
+            raise RuntimeError("Could not load the equation-number font.")
+        old_font = gdi.SelectObject(dc, font)
+        if not old_font or old_font == ctypes.c_void_p(-1).value:
+            old_font = None
+            raise RuntimeError("Could not select the equation-number font.")
+        extent = wintypes.SIZE()
+        units = len(text.encode("utf-16-le")) // 2
+        if not gdi.GetTextExtentPoint32W(dc, text, units, ctypes.byref(extent)):
+            raise RuntimeError("Could not measure the equation-number label.")
+        return float(extent.cx) / 1024.0
+    finally:
+        if old_font:
+            gdi.SelectObject(dc, old_font)
+        if font:
+            gdi.DeleteObject(font)
+        gdi.DeleteDC(dc)
+
+
+def number_reserve_pt(target: Any, options: LayoutOptions, size: float) -> float:
+    """Reserve rendered label width plus a gap, including the next SEQ digit count."""
+    if options.number_label is not None:
+        labels = [options.number_label]
+    else:
+        fields = [field for field in target.Document.Fields if is_visible_number(field)]
+        # A format/update may not add a field, but allowing one prospective field
+        # also covers insertion across 9->10, 99->100, etc. Existing restart values
+        # can be larger than the field count, so include their digit lengths too.
+        digits = len(str(len(fields) + 1))
+        labels = []
+        for field in fields:
+            value = str(field.Result.Text).strip()
+            if value.isascii() and value.isdecimal():
+                digits = max(digits, len(value))
+            elif value:
+                labels.append("(" + value + ")")
+        labels.append("(" + "8" * digits + ")")
+    return max(_number_text_width_em(label) * size for label in labels) + NUMBER_GAP_PT
+
+
 def check_block_fits(target: Any, shape: Any, options: LayoutOptions, size: float) -> float:
     width = available_width(target)
-    # Conservative reserve, preventing center/right tabs from colliding. Long
-    # equations are rejected before any document edit instead of silently shrunk.
-    reserve = 0.0
-    if options.layout == "numbered":
-        reserve = max(54.0, size * len(options.number_label or "(999999)"))
+    # Keep the formula centered in the entire text width. Therefore the real
+    # right-side number width + gap must also fit in the left-side margin.
+    reserve = number_reserve_pt(target, options, size) if options.layout == "numbered" else 0.0
     allowed = width - 2 * reserve
     if allowed <= 0 or float(shape.Width) > allowed:
         raise ValueError(
@@ -148,6 +238,8 @@ def place_equation(
 
     if options.layout == "numbered":
         preflight_numbers(doc)
+        if options.number_label is None:
+            preflight_native_numbering(doc)
     width = check_block_fits(target, generated, options, size)
     para = target.Paragraphs(1).Range
     start = int(target.Start)
@@ -179,28 +271,60 @@ def place_equation(
         doc.Range(location, location).InsertAfter("\t")
         location += 1
     inserted = replace_object(doc, doc.Range(location, location), generated)
+    # Cross-instance XML insertion may replace the paragraph object. Formatting
+    # proxies captured before insertion can then refer to the old paragraph.
+    paragraph = inserted.Range.Paragraphs(1)
+    fmt = paragraph.Format
     if options.layout == "display":
         fmt.Alignment = 1  # wdAlignParagraphCenter
         return inserted
 
     fmt.Alignment = 0
+    fmt.TabStops.ClearAll()
     fmt.TabStops.Add(Position=width / 2, Alignment=1, Leader=0)
     fmt.TabStops.Add(Position=width, Alignment=2, Leader=0)
     end = int(inserted.Range.End)
     suffix_range = doc.Range(end, end)
-    suffix_range.InsertAfter("\t" + (options.number_label or "()"))
+    suffix_range.InsertAfter("\t" + (options.number_label or ""))
+    if options.number_label is None:
+        baseline = read_equation_metrics(generated.Range)["baseline_offset_pt"]
+        if baseline is None:
+            raise RuntimeError("Cannot determine the native equation baseline for numbering.")
+        original_size = equation_font_size(generated.Range)
+        original_font = generated.Range.Font.Name
+        original_format = inserted.Range.ParagraphFormat.Duplicate
+        number = insert_native_number(doc, end + 1)
+        # The vendor applies its display style. Restore our managed paragraph and
+        # the OLE baseline explicitly before reapplying center/right tabs.
+        paragraph = inserted.Range.Paragraphs(1)
+        paragraph.Range.Style = _style(doc, NUMBERED_STYLE)
+        paragraph.Format = original_format
+        inserted.Range.Font.Name = original_font
+        inserted.Range.Font.Size = original_size
+        inserted.Range.Font.Position = baseline
+        fmt = paragraph.Format
+        fmt.Alignment = 0
+        fmt.TabStops.ClearAll()
+        fmt.TabStops.Add(Position=width / 2, Alignment=1, Leader=0)
+        fmt.TabStops.Add(Position=width, Alignment=2, Leader=0)
     # Formatting the suffix only avoids erasing the OLE's native baseline offset.
-    number = doc.Range(end + 1, suffix_range.End)
+    number = doc.Range(end + 1, paragraph.Range.End - 1)
     number.Font.Name = "Times New Roman"
     number.Font.Size = size
     number.Font.Position = 0
+    number.Font.Bold = False
     number.Font.Italic = False
-    if options.number_label is None:
-        field_at = doc.Range(end + 2, end + 2)
-        doc.Fields.Add(
-            Range=field_at, Type=12, Text=SEQUENCE + r" \* ARABIC", PreserveFormatting=True
-        )
+    number.Font.Spacing = 0
+    number.Font.Scaling = 100
+    number.Font.AllCaps = False
+    number.Font.SmallCaps = False
     number = doc.Range(end + 1, paragraph.Range.End - 1)
     doc.Bookmarks.Add(Name=NUMBER_BOOKMARK + uuid.uuid4().hex[:20], Range=number)
     refresh_numbers(doc)
+    if options.number_label is None:
+        # Style changes and field updates can coalesce character runs. Restore the
+        # native OLE run last, using the untouched converter object's formatting.
+        inserted.Range.Font.Name = original_font
+        inserted.Range.Font.Size = original_size
+        inserted.Range.Font.Position = baseline
     return inserted

@@ -1,6 +1,6 @@
 Metadata-Version: 2.5
 Name: axmath-mcp
-Version: 0.3.0
+Version: 0.4.0
 Summary: Local MCP tools for editable AxMath equations in Microsoft Word and PowerPoint
 Classifier: Development Status :: 3 - Alpha
 Classifier: Operating System :: Microsoft :: Windows
@@ -28,7 +28,7 @@ Word 与 PowerPoint 使用同一个 `axmath` 服务，只需安装和连接一�
 
 本项目不包含 Office、AxMath 或其授权，不需要为这个 MCP 服务另外填写大模型 API Key。模型由你使用的 MCP 客户端提供。
 
-## 1. 安装并连接 Codex
+## 1. 安装并选择连接方式
 
 将 `YOUR_GITHUB_USER` 替换为实际仓库的用户名或组织名；下面的仓库地址是占位符。
 
@@ -36,13 +36,37 @@ Word 与 PowerPoint 使用同一个 `axmath` 服务，只需安装和连接一�
 git clone https://github.com/YOUR_GITHUB_USER/axmath-mcp.git
 Set-Location axmath-mcp
 uv sync --locked --default-index https://pypi.org/simple
-uv run --no-sync python scripts/register_codex.py --install
-uv run --no-sync python scripts/smoke_mcp.py
 ```
 
-也可以下载仓库 ZIP，解压并进入项目目录后执行后三条命令。首次同步需要联网，并会创建项目独立的 `.venv`。
+也可以下载仓库 ZIP，解压并进入项目目录后执行 `uv sync` 那一条命令。首次同步需要联网，并会创建项目独立的 `.venv`。随后选择一种连接方式。
+
+**直接连接 Codex：**
+
+```powershell
+uv run --no-sync python scripts/register_codex.py --install
+```
 
 注册脚本会识别你电脑上的项目位置和 `uv.exe` 路径，保留原 Codex 配置。相同配置不重复写入；同名配置不同则提示冲突，不直接覆盖。
+
+**通过 CC Switch 管理：**
+
+目标客户端（如 Codex 或 Claude Code）先安装并启动一次。然后在项目目录生成本机配置：
+
+```powershell
+uv run --no-sync python scripts/export_mcp_config.py
+```
+
+复制输出的整段 JSON，在 CC Switch 中选择 **MCP → 添加 MCP → 粘贴配置**，连接方式为本地命令（stdio），在“写入到”勾选目标客户端并保存。也可以在 PowerShell 中运行 `uv run --no-sync python scripts/export_mcp_config.py | Set-Clipboard`，直接把配置放到剪贴板。这条连接方式无需再运行 Codex 注册脚本。
+
+如果只同步给 Codex，使用 `scripts/export_mcp_config.py --codex`，会附带 300 秒工具超时；同步其他客户端时使用通用输出，并按目标客户端的设置调整超时。手动配置参考 [CC Switch JSON 模板](config/cc-switch.json)，需修改其中的项目路径；自动导出无需改路径。
+
+如果此前已经用注册脚本配置 Codex，可以在 CC Switch 的 MCP 页面选择“从应用导入”，将现有 `axmath` 条目纳入管理。同名配置以后以 CC Switch 中的内容为准。菜单与导入格式依据 [CC Switch 官方手册](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.1-mcp.md)。
+
+**检查安装：**
+
+```powershell
+uv run --no-sync python scripts/smoke_mcp.py
+```
 
 完成后，在客户端重新加载 MCP 服务，必要时重启客户端。服务由客户端自动启动，日常使用无需单独打开终端运行。移动项目目录后，需要更新客户端中的路径配置。
 
@@ -62,7 +86,7 @@ uv run --no-sync python scripts/smoke_mcp.py
 
 > 把选中的文字替换为行内公式 `\frac{a+b}{c+d}`，保持前后的中文正文。
 
-> 把这条公式的编号改成固定的 `(A.1)`，最后另存为 `C:\Documents\公式示例.docx`。
+> 刷新文档中的 AxMath 公式编号，最后另存为 `C:\Documents\公式示例.docx`。
 
 Word 支持三种排版：
 
@@ -72,7 +96,7 @@ Word 支持三种排版：
 | 独立居中 | 公式单独占一段 | `layout: "display"` |
 | 带编号 | 公式居中、编号在右侧 | `layout: "numbered"` |
 
-带编号时，省略 `number_label` 会生成自动序号；给出 `"(A.1)"` 等文本则使用固定编号。插入位置支持正文末尾、书签或已检查的当前选区。修改已有公式时，先列出公式，再按返回的 ID 操作。
+Word 带编号公式统一调用已安装 AxMath 插件生成原生自动编号，默认 `(1)、(2)…`，可由 AxMath 自身的更新编号功能维护。Word 工具不再提供手工编号标签、旧版编号兼容或迁移。当前 MCP 插入支持普通连续编号；已有章节或自定义编号格式请在 AxMath 中操作，MCP 不会覆盖这些设置。插入位置支持正文末尾、书签或已检查的当前选区。修改已有公式时，先列出公式，再按返回的 ID 操作。
 
 如果直接构造工具参数，`word_insert_axmath` 示例为：
 

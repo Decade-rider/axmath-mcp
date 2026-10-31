@@ -2,6 +2,7 @@
 .uv-cache/
 __pycache__/
 .pytest_cache/
+.pytest-native-*/
 .ruff_cache/
 .research/
 artifacts/

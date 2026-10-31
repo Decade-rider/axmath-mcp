@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Literal
 
+from axmath_mcp.axmath_compat import check_axmath_input
+
 MAX_LATEX_LENGTH = 20_000
 EquationLayout = Literal["inline", "display", "numbered"]
 
@@ -204,6 +206,7 @@ def latex_for_layout(source: str, layout: str) -> str:
     """
     options = validate_layout_options(layout)
     normalized = normalize_latex(source)
+    check_axmath_input(normalized)
     width = 1 if normalized.startswith("$") and not normalized.startswith("$$") else 2
     body = normalized[width:-width]
     if options.layout == "inline":

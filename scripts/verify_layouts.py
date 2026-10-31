@@ -118,7 +118,7 @@ def inspect_package(path):
         fields = ["".join(n.itertext()) for n in tree.findall(".//w:instrText", NS)]
         return {
             "equations": equations,
-            "sequence_fields": [s for s in fields if "SEQ AxMathEquation" in s],
+            "sequence_fields": [s for s in fields if "SEQ AMEqn" in s],
             "ole_count": len(tree.findall(".//o:OLEObject", NS)),
         }
 

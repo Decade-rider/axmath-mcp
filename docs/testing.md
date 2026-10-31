@@ -30,6 +30,12 @@ GitHub Actions 使用 Windows 和 Python 3.12 执行这些检查，不会在托�
 
 ## Word 实机测试
 
+### 0.4.0 原生编号
+
+Word 工具统一通过已安装 AxMath 插件生成原生编号，不再生成旧版编号，也不提供迁移工具或 Word 固定标签参数。普通连续编号 `(1)、(2)…` 已验证；已有章节或自定义格式会被保护，当前不自动插入此类编号。
+
+本机回归覆盖用户提供的 343.8 pt 马尔可夫性公式、平稳分布公式、中英文混排，以及前插、改写、带编号/不带编号切换、删除后刷新。另验证 AxMath 自身更新宏可以维护生成的编号。实际 MCP stdio 测试检查原生 `AMMPlaceRM`/`AMEqn` 域、字号和持久化基线；541 项离线测试通过。以下旧版本记录仅用于历史参考。
+
 先确认本机 Word 可以手动插入并编辑 AxMath 公式。测试创建独立文档，不修改已有文档；测试期间请避免同时操作 Office 或 AxMath。
 
 ```powershell
@@ -39,8 +45,11 @@ uv run --no-sync python scripts/smoke_mcp.py
 # 新建文档，验证插入、读取、更新与保存
 uv run --no-sync python scripts/smoke_mcp.py --exercise-word
 
-# 验证自动编号、14 磅字号保持、独立公式和固定编号切换
+# 验证 AxMath 原生自动编号、14 磅字号保持及独立公式切换
 uv run --no-sync python scripts/smoke_layout_mcp.py --exercise-word
+
+# 长公式、增删重编号、中英文混排及临时文档清理
+uv run --no-sync python scripts/verify_conversion_resilience.py --exercise-office
 ```
 
 输出文件和 JSON 记录位于 `artifacts/`。该目录不会进入 Git 仓库或分发包；日志中可能包含本机文件路径，分享之前应检查内容。

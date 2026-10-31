@@ -11,5 +11,5 @@ tool_timeout_sec = 300
 UV_CACHE_DIR = 'C:\path\to\axmath-mcp\.uv-cache'
 PYTHONUTF8 = '1'
 PYTHONUNBUFFERED = '1'
-AXMATH_MCP_VERSION = '0.3.0'
+AXMATH_MCP_VERSION = '0.4.0'
 

@@ -56,6 +56,7 @@ def generate_staged_assets(path: Path) -> list[dict[str, Any]]:
 
     from axmath_mcp.backend import WordBackend
     from axmath_mcp.validation import latex_for_layout
+    from axmath_mcp.word_transfer import copy_native_range
 
     records: list[dict[str, Any]] = []
     cases = unique_cases()
@@ -75,15 +76,15 @@ def generate_staged_assets(path: Path) -> list[dict[str, Any]]:
             started = time.monotonic()
             print("generating " + case.case_id, flush=True)
             with (
-                backend._conversion(app),
-                backend._generated(app, latex_for_layout(latex, mode), font_size) as (
+                backend._conversion() as converter,
+                backend._generated(converter, latex_for_layout(latex, mode), font_size) as (
                     shape,
                     source,
                 ),
             ):
                 doc.Activate()
                 destination = doc.Range(doc.Content.End - 1, doc.Content.End - 1)
-                destination.FormattedText = shape.Range.FormattedText
+                copy_native_range(destination, shape.Range)
                 if destination.InlineShapes.Count != 1:
                     raise RuntimeError(f"Expected one copied native object for {case.case_id}.")
                 inserted = destination.InlineShapes(1)

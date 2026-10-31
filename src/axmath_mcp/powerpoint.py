@@ -17,7 +17,7 @@ import pywintypes
 import win32com.client
 
 from axmath_mcp.backend import PROGID, WordBackend, _assert_file_available, _reg, _same
-from axmath_mcp.ole_bridge import extract_axmath_storage
+from axmath_mcp.ole_bridge import extract_axmath_storage, extract_powerpoint_storage
 from axmath_mcp.ppt_validation import (
     ensure_fits,
     validate_font_size,
@@ -376,11 +376,10 @@ class PowerPointBackend:
         size: float,
         label_text: str | None,
     ) -> tuple[Any, Any | None, str]:
-        app = self.word._active_app(create=True)
         shape = label = None
         try:
             with (
-                self.word._conversion(app),
+                self.word._conversion() as app,
                 self.word._generated(app, latex_for_layout(latex, "display"), size) as (
                     native,
                     actual,
@@ -555,21 +554,39 @@ class PowerPointBackend:
     def ppt_get_equation_latex(
         self, presentation_id: str, slide_id: int, equation_id: str
     ) -> dict[str, Any]:
-        _, _, shape = self._eq(presentation_id, slide_id, equation_id)
-        app = self.word._active_app(create=True)
-        with self.word._conversion(app), self.word._scratch(app) as copy:
-            shape.Copy()
-            copy.Range(0, 0).PasteSpecial(DataType=0, Placement=0, DisplayAsIcon=False, Link=False)
-            # PowerPoint's clipboard yields a floating Word OLE despite Placement=0.
-            if copy.InlineShapes.Count == 0 and copy.Shapes.Count == 1:
-                floating = copy.Shapes(1)
-                if self._is_equation(floating):
-                    floating.ConvertToInlineShape()
-            if copy.InlineShapes.Count != 1 or not self.word._is_equation(copy.InlineShapes(1)):
+        pres, _, shape = self._eq(presentation_id, slide_id, equation_id)
+        with (
+            self.word._conversion() as app,
+            tempfile.TemporaryDirectory(prefix="axmath-read-") as directory,
+        ):
+            # PowerPoint's clipboard formats are not reliably pasteable into a
+            # separate hidden Word process. SaveCopyAs captures current in-memory
+            # OLE data without saving or changing the original presentation.
+            macro_enabled = bool(pres.HasVBProject)
+            snapshot = Path(directory) / (
+                "presentation.pptm" if macro_enabled else "presentation.pptx"
+            )
+            original_name, original_saved = str(pres.FullName), bool(pres.Saved)
+            pres.SaveCopyAs(FileName=str(snapshot), FileFormat=25 if macro_enabled else 24)
+            if str(pres.FullName) != original_name or bool(pres.Saved) != original_saved:
                 raise RuntimeError(
-                    "Could not read the native PowerPoint equation into the temporary Word copy."
+                    "PowerPoint changed the source state while saving its temporary copy; inspect it."
                 )
-            source = self.word._export_copy(app, copy.InlineShapes(1))
+            native = Path(directory) / "equation.afx"
+            native.write_bytes(extract_powerpoint_storage(snapshot, slide_id, int(shape.Id)))
+            with self.word._scratch(app) as copy:
+                equation = copy.InlineShapes.AddOLEObject(
+                    ClassType=PROGID,
+                    FileName=str(native),
+                    LinkToFile=False,
+                    DisplayAsIcon=False,
+                    Range=copy.Range(0, 0),
+                )
+                if copy.InlineShapes.Count != 1 or not self.word._is_equation(equation):
+                    raise RuntimeError(
+                        "Could not load the native PowerPoint equation into the temporary Word copy."
+                    )
+                source = self.word._export_inplace(app, copy)
         return {
             "presentation_id": presentation_id,
             "slide_id": slide_id,

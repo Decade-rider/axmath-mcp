@@ -111,6 +111,13 @@ async def exercise_word(session: ClientSession) -> dict[str, Any]:
     after = await call("word_document_info", document_id=document_id)
     assert after["inline_shape_count"] == before["inline_shape_count"] == 1
 
+    numbered = await call(
+        "word_format_axmath", document_id=document_id, equation_id=equation_id, layout="numbered"
+    )
+    assert numbered["number_text"] == "(1)"
+    refreshed = await call("word_refresh_equation_numbers", document_id=document_id)
+    assert refreshed["numbers"] == ["1"]
+
     output_dir = ROOT / "artifacts"
     output_dir.mkdir(exist_ok=True)
     stamp = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%dT%H%M%S-%f")
@@ -118,12 +125,19 @@ async def exercise_word(session: ClientSession) -> dict[str, Any]:
     saved = await call("word_save_document", document_id=document_id, path=str(target))
     assert saved["saved"] is True
     assert target.is_file() and target.stat().st_size > 0
+    from zipfile import ZipFile
+
+    with ZipFile(target) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+    assert "AMMPlaceRM" in xml and "SEQ AMEqn" in xml
+    assert "AxMathEquation" not in xml
     return {
         "document_id": document_id,
         "equation_id": equation_id,
         "inserted_latex_export": exported["latex"],
         "updated_latex_export": second_export["latex"],
         "native_ole_count": 1,
+        "native_numbering_verified": True,
         "selection_mismatch_refused": True,
         "saved_document": str(target),
         "document_left_open": True,

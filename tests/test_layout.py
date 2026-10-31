@@ -1,7 +1,8 @@
 """Layout safety checks independent of a running Word instance."""
 
+import sys
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -15,6 +16,7 @@ from axmath_mcp.layout import (
     describe_layout,
     inline_paragraph,
     managed_target,
+    number_reserve_pt,
     place_equation,
     refresh_numbers,
 )
@@ -31,9 +33,9 @@ def _field(code, *, field_type=12, locked=False, success=True, result="1"):
     )
 
 
-def _page_target(*, table=False, columns=1, gutter=0, gutter_position=0):
+def _page_target(*, table=False, columns=1, gutter=0, gutter_position=0, text_width=468, fields=()):
     setup = SimpleNamespace(
-        PageWidth=612,
+        PageWidth=text_width + 144,
         LeftMargin=72,
         RightMargin=72,
         Gutter=gutter,
@@ -43,14 +45,15 @@ def _page_target(*, table=False, columns=1, gutter=0, gutter_position=0):
     return SimpleNamespace(
         Information=Mock(return_value=table),
         Sections=Mock(return_value=SimpleNamespace(PageSetup=setup)),
+        Document=SimpleNamespace(Fields=list(fields)),
     )
 
 
 def test_sequence_refresh_does_not_update_other_numbering_or_external_fields():
-    owned = _field(r" SEQ AxMathEquation \* ARABIC ", result="3")
+    owned = _field(r" SEQ AMEqn \c \* ARABIC ", result="3")
     other = [
         _field("SEQ Figure", locked=True),
-        _field("SEQ AxMathEquationSupplement"),
+        _field("SEQ UnrelatedEquationSupplement"),
         _field("INCLUDETEXT external.docx", field_type=68),
         _field("REF AxMathEquation", field_type=3),
     ]
@@ -64,8 +67,8 @@ def test_sequence_refresh_does_not_update_other_numbering_or_external_fields():
 
 
 def test_locked_owned_sequence_is_detected_before_any_number_is_changed():
-    first = _field("SEQ AxMathEquation", result="2")
-    locked = _field("SEQ axmathequation", locked=True)
+    first = _field(r"SEQ AMEqn \c", result="2")
+    locked = _field(r"SEQ ameqn \c", locked=True)
 
     with pytest.raises(ValueError, match="locked"):
         refresh_numbers(SimpleNamespace(Fields=[first, locked]))
@@ -75,8 +78,8 @@ def test_locked_owned_sequence_is_detected_before_any_number_is_changed():
 
 
 def test_failed_number_update_is_reported_and_later_numbers_are_not_updated():
-    broken = _field("SEQ AxMathEquation", success=False)
-    following = _field("SEQ AxMathEquation")
+    broken = _field(r"SEQ AMEqn \c", success=False)
+    following = _field(r"SEQ AMEqn \c")
 
     with pytest.raises(RuntimeError, match="could not update"):
         refresh_numbers(SimpleNamespace(Fields=[broken, following]))
@@ -98,13 +101,63 @@ def test_unsupported_block_containers_are_rejected(kwargs, message):
         available_width(_page_target(**kwargs))
 
 
-def test_numbered_formula_reserves_equal_space_on_both_sides():
+def test_numbered_formula_reserves_measured_label_and_gap_equally(monkeypatch):
+    monkeypatch.setattr(layout_module, "_number_text_width_em", lambda _: 14 / 12)
     target = _page_target()
     options = validate_layout_options("numbered")
-    # 468 pt text width, 96 pt reserved on EACH side for '(999999)' at 12 pt.
-    assert check_block_fits(target, SimpleNamespace(Width=276), options, 12) == 468
-    with pytest.raises(ValueError, match="276.0 pt is available"):
-        check_block_fits(target, SimpleNamespace(Width=276.5), options, 12)
+    # Measured 14 pt label + 8 pt gap on EACH side, not 96 pt per side.
+    assert check_block_fits(target, SimpleNamespace(Width=424), options, 12) == 468
+    with pytest.raises(ValueError, match="424.0 pt is available"):
+        check_block_fits(target, SimpleNamespace(Width=424.5), options, 12)
+
+
+def test_reported_markov_formula_is_not_rejected_by_six_digit_reserve(monkeypatch):
+    measure = Mock(return_value=14 / 12)
+    monkeypatch.setattr(layout_module, "_number_text_width_em", measure)
+    target = _page_target(
+        text_width=447.9, fields=[_field(r"SEQ AMEqn \c", result=str(i)) for i in range(1, 4)]
+    )
+    options = validate_layout_options("numbered")
+    assert check_block_fits(target, SimpleNamespace(Width=343.8), options, 12) == pytest.approx(
+        447.9
+    )
+    measure.assert_called_once_with("(8)")
+    with pytest.raises(ValueError, match="403.9 pt is available"):
+        check_block_fits(target, SimpleNamespace(Width=404), options, 12)
+
+
+@pytest.mark.parametrize("count,expected", [(0, "(8)"), (8, "(8)"), (9, "(88)"), (99, "(888)")])
+def test_automatic_width_covers_next_sequence_digit_count(monkeypatch, count, expected):
+    measure = Mock(return_value=1.5)
+    monkeypatch.setattr(layout_module, "_number_text_width_em", measure)
+    target = _page_target(fields=[_field(r"SEQ AMEqn \c", result=str(i + 1)) for i in range(count)])
+    assert number_reserve_pt(target, validate_layout_options("numbered"), 12) == 26
+    measure.assert_called_once_with(expected)
+
+
+def test_existing_sequence_restart_value_is_not_undercounted(monkeypatch):
+    measure = Mock(return_value=2.5)
+    monkeypatch.setattr(layout_module, "_number_text_width_em", measure)
+    target = _page_target(fields=[_field(r"SEQ AMEqn \c \\r 1000", result="1000")])
+    number_reserve_pt(target, validate_layout_options("numbered"), 12)
+    measure.assert_called_once_with("(8888)")
+
+
+def test_manual_unicode_label_is_measured_as_its_exact_text(monkeypatch):
+    measure = Mock(return_value=5.0)
+    monkeypatch.setattr(layout_module, "_number_text_width_em", measure)
+    options = validate_layout_options("numbered", number_label="（附录甲）")
+    assert number_reserve_pt(_page_target(), options, 12) == 68
+    measure.assert_called_once_with("（附录甲）")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows GDI font metrics")
+def test_gdi_measures_real_number_width_without_the_old_full_em_estimate():
+    measured = layout_module._number_text_width_em("(1)") * 12
+    assert 12 < measured < 17
+    assert layout_module._number_text_width_em("(888)") > layout_module._number_text_width_em("(8)")
+    assert layout_module._number_text_width_em("（附录甲）") > 0
+    assert layout_module._number_text_width_em("(😀)") > 0
 
 
 def test_unnumbered_display_uses_full_text_width_without_scaling_object():
@@ -114,7 +167,7 @@ def test_unnumbered_display_uses_full_text_width_without_scaling_object():
 
 
 def test_long_explicit_label_cannot_silently_overlap_the_formula():
-    options = validate_layout_options("numbered", number_label="(Long-Equation-123)")
+    options = validate_layout_options("numbered", number_label="(" + "W" * 60 + ")")
     with pytest.raises(ValueError, match="available"):
         check_block_fits(_page_target(), SimpleNamespace(Width=100), options, 12)
 
@@ -142,7 +195,7 @@ def _managed_document(text, style, *, marker=None, object_count=1, automatic=Fal
     bookmarks = []
     if marker:
         a, b = marker
-        fields = [_field("SEQ AxMathEquation")] if automatic else []
+        fields = [_field(r"SEQ AMEqn \c")] if automatic else []
         bookmarks.append(
             SimpleNamespace(
                 Name=NUMBER_BOOKMARK + "test",
@@ -275,6 +328,7 @@ def test_style_is_applied_before_copy_so_it_cannot_clear_native_baseline(mode, m
             self.Paragraphs = Mock(return_value=paragraph)
             page = _page_target()
             self.Information, self.Sections = page.Information, page.Sections
+            self.Document = page.Document
 
         def InsertAfter(self, text):
             self.End += len(text)
@@ -309,7 +363,7 @@ def test_style_is_applied_before_copy_so_it_cannot_clear_native_baseline(mode, m
 
 
 def test_locked_sequence_blocks_numbered_insertion_before_target_changes():
-    doc = SimpleNamespace(Fields=[_field("SEQ AxMathEquation", locked=True)])
+    doc = SimpleNamespace(Fields=[_field(r"SEQ AMEqn \c", locked=True)])
     target = SimpleNamespace(Text="existing target text")
     replace = Mock()
 
@@ -318,3 +372,58 @@ def test_locked_sequence_blocks_numbered_insertion_before_target_changes():
 
     assert target.Text == "existing target text"
     replace.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["display", "numbered"])
+def test_replaced_paragraph_receives_final_alignment_and_number_tabs(mode, monkeypatch):
+    """InsertXML can invalidate the paragraph/Format proxies captured before copy."""
+    state = {"inserted": False}
+    old_format = SimpleNamespace(Alignment=99, TabStops=Mock())
+    new_format = SimpleNamespace(Alignment=99, TabStops=Mock())
+    old_paragraph = SimpleNamespace(
+        Range=SimpleNamespace(Start=0, End=1, Style=SimpleNamespace(NameLocal="Normal")),
+        Format=old_format,
+    )
+    new_paragraph = SimpleNamespace(
+        Range=SimpleNamespace(Start=0, End=1, Style=SimpleNamespace(NameLocal="Normal")),
+        Format=new_format,
+    )
+
+    class Range:
+        def __init__(self, start, end):
+            self.Start, self.End = start, end
+            self.Text = ""
+            self.Font = SimpleNamespace()
+            # This proxy is bound to the paragraph existing when Range was made.
+            self.paragraph = new_paragraph if state["inserted"] else old_paragraph
+            self.Paragraphs = Mock(return_value=self.paragraph)
+
+        def InsertAfter(self, text):
+            self.End += len(text)
+            self.paragraph.Range.End += len(text)
+
+    def replace(_doc, location, _generated):
+        state["inserted"] = True
+        new_paragraph.Range.End = location.Start + 28 + 1
+        return SimpleNamespace(Range=Range(location.Start, location.Start + 28))
+
+    doc = SimpleNamespace(Range=Range, Fields=[], Bookmarks=SimpleNamespace(Add=Mock()))
+    monkeypatch.setattr(layout_module, "check_block_fits", lambda *_: 447.9)
+    monkeypatch.setattr(layout_module, "_style", lambda _, name: SimpleNamespace(NameLocal=name))
+    options = validate_layout_options(mode, number_label="(1)" if mode == "numbered" else None)
+
+    inserted = place_equation(doc, Range(0, 0), object(), options, 12, replace)
+
+    assert inserted.Range.Paragraphs(1) is new_paragraph
+    assert old_format.Alignment == 99, "Post-insertion alignment must not target the old proxy."
+    assert new_format.Alignment == (0 if mode == "numbered" else 1)
+    if mode == "numbered":
+        new_format.TabStops.ClearAll.assert_called_once_with()
+        assert new_format.TabStops.Add.call_args_list == [
+            call(Position=223.95, Alignment=1, Leader=0),
+            call(Position=447.9, Alignment=2, Leader=0),
+        ]
+        old_format.TabStops.Add.assert_not_called()
+        assert doc.Bookmarks.Add.call_args.kwargs["Range"].End == new_paragraph.Range.End - 1
+    else:
+        new_format.TabStops.Add.assert_not_called()

@@ -63,10 +63,28 @@ class OfficeBackend:
 
     def __getattr__(self, name: str) -> Any:
         if name in WORD_METHODS:
-            return getattr(self.word, name)
-        if name in PPT_METHODS:
-            return getattr(self.ppt, name)
-        raise AttributeError(f"Unknown Office backend method: {name}")
+            method = getattr(self.word, name)
+        elif name in PPT_METHODS:
+            method = getattr(self.ppt, name)
+        else:
+            raise AttributeError(f"Unknown Office backend method: {name}")
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            result = method(*args, **kwargs)
+            status_reader = getattr(self.word, "conversion_status", None)
+            status = status_reader() if callable(status_reader) else {}
+            if isinstance(result, dict) and (
+                status.get("pending_count", 0) or status.get("cleanup_warnings")
+            ):
+                result = dict(result)
+                result["temporary_documents_pending"] = status["pending_count"]
+                result["warnings"] = [
+                    *result.get("warnings", []),
+                    *status.get("cleanup_warnings", []),
+                ]
+            return result
+
+        return call
 
     def health(self) -> dict[str, Any]:
         result = dict(self.word.health())
@@ -88,7 +106,7 @@ class OfficeBackend:
         return result
 
     def shutdown(self) -> None:
-        # Release proxies only: neither backend may close the user's documents.
+        # Only private, tracked conversion documents may be closed here.
         try:
             self.ppt.shutdown()
         finally:

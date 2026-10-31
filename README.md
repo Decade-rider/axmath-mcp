@@ -72,17 +72,17 @@ uv run --no-sync python scripts/smoke_mcp.py
 
 > 把选中的文字替换为行内公式 `\frac{a+b}{c+d}`，保持前后的中文正文。
 
-> 把这条公式的编号改成固定的 `(A.1)`，最后另存为 `C:\Documents\公式示例.docx`。
+> 刷新文档中的 AxMath 公式编号，最后另存为 `C:\Documents\公式示例.docx`。
 
 Word 支持三种排版：
 
-| 排版     | 适合的场景           | 参数                   |
-| -------- | -------------------- | ---------------------- |
-| 行内     | 与中文或英文正文混排 | `layout: "inline"`   |
-| 独立居中 | 公式单独占一段       | `layout: "display"`  |
-| 带编号   | 公式居中、编号在右侧 | `layout: "numbered"` |
+| 排版 | 适合的场景 | 参数 |
+| --- | --- | --- |
+| 行内 | 与中文或英文正文混排 | `layout: "inline"` |
+| 独立居中 | 公式单独占一段 | `layout: "display"` |
+| 带编号 | 公式居中、编号在右侧 | `layout: "numbered"` |
 
-带编号时，省略 `number_label` 会生成自动序号；给出 `"(A.1)"` 等文本则使用固定编号。插入位置支持正文末尾、书签或已检查的当前选区。修改已有公式时，先列出公式，再按返回的 ID 操作。
+Word 带编号公式统一调用已安装 AxMath 插件生成原生自动编号，默认 `(1)、(2)…`，可由 AxMath 自身的更新编号功能维护。Word 工具不再提供手工编号标签、旧版编号兼容或迁移。当前 MCP 插入支持普通连续编号；已有章节或自定义编号格式请在 AxMath 中操作，MCP 不会覆盖这些设置。插入位置支持正文末尾、书签或已检查的当前选区。修改已有公式时，先列出公式，再按返回的 ID 操作。
 
 如果直接构造工具参数，`word_insert_axmath` 示例为：
 
@@ -136,15 +136,15 @@ PowerPoint 的公式是幻灯片上的独立对象，可以与中英文文本框
 
 ## 常用工具
 
-| 任务                       | 工具                                                                    |
-| -------------------------- | ----------------------------------------------------------------------- |
-| 检查环境                   | `axmath_health`                                                       |
-| 查找 Word 文档和公式       | `word_list_documents`、`word_list_equations`                        |
-| 插入、修改、排版 Word 公式 | `word_insert_axmath`、`word_update_axmath`、`word_format_axmath`  |
-| 刷新 Word 自动编号、保存   | `word_refresh_equation_numbers`、`word_save_document`               |
+| 任务 | 工具 |
+| --- | --- |
+| 检查环境 | `axmath_health` |
+| 查找 Word 文档和公式 | `word_list_documents`、`word_list_equations` |
+| 插入、修改、排版 Word 公式 | `word_insert_axmath`、`word_update_axmath`、`word_format_axmath` |
+| 刷新 Word 自动编号、保存 | `word_refresh_equation_numbers`、`word_save_document` |
 | 查找演示文稿、幻灯片和公式 | `ppt_list_presentations`、`ppt_list_slides`、`ppt_list_equations` |
-| 插入、修改、移动幻灯片公式 | `ppt_insert_axmath`、`ppt_update_axmath`、`ppt_position_axmath`   |
-| 保存演示文稿               | `ppt_save_presentation`                                               |
+| 插入、修改、移动幻灯片公式 | `ppt_insert_axmath`、`ppt_update_axmath`、`ppt_position_axmath` |
+| 保存演示文稿 | `ppt_save_presentation` |
 
 两种应用也提供打开或新建文件、读取 LaTeX 和打开 AxMath 编辑器的工具。文件和公式 ID 由服务返回；重启服务后应重新列出对象，不要沿用旧 ID。
 
